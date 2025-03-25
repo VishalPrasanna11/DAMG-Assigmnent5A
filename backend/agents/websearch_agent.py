@@ -1,25 +1,23 @@
 # backend/agents/websearch_agent.py
 import os
 from typing import Dict, Any, List, Optional
-import requests
-from datetime import datetime
+from tavily import TavilyClient
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 
 class WebSearchAgent:
     def __init__(self):
-        # Initialize with your preferred search API
-        # For example, using SerpAPI
-        self.api_key = os.getenv("SERPAPI_API_KEY")
+        # Initialize with Tavily API
+        self.api_key = os.getenv("TAVILY_API_KEY")
         if not self.api_key:
-            raise ValueError("SERPAPI_API_KEY environment variable not set")
+            raise ValueError("TAVILY_API_KEY environment variable not set")
         
-        self.search_url = "https://serpapi.com/search"
+        self.client = TavilyClient(api_key=self.api_key)
         self.llm = ChatOpenAI(temperature=0)
         
     def query(self, query_text: str) -> Dict[str, Any]:
         """
-        Query web search API for latest information on NVIDIA related to the query.
+        Query Tavily API for latest information on NVIDIA related to the query.
         
         Args:
             query_text: The query text
@@ -28,33 +26,28 @@ class WebSearchAgent:
             Dictionary with search results and synthesized information
         """
         # Augment query to focus on NVIDIA and recent information
-        augmented_query = f"NVIDIA {query_text} latest news"
+        augmented_query = f"NVIDIA {query_text} latest news this week"
         
-        # Prepare search parameters
-        params = {
-            "q": augmented_query,
-            "api_key": self.api_key,
-            "engine": "google",
-            "num": 5,  # Limit to 5 results
-            "tbm": "nws"  # News search
-        }
+        # Execute search with Tavily
+        response = self.client.search(
+            query=augmented_query,
+            search_depth="advanced",
+            max_results=5,
+            include_domains=["forbes.com", "cnbc.com", "bloomberg.com", "reuters.com", "wsj.com"]
+        )
         
-        # Execute search
-        response = requests.get(self.search_url, params=params)
-        search_results = response.json()
-        
-        # Extract organic results
-        news_results = search_results.get("news_results", [])
+        # Extract results
+        search_results = response.get("results", [])
         
         # Format results
         formatted_results = []
-        for result in news_results:
+        for result in search_results:
             formatted_results.append({
                 "title": result.get("title", ""),
-                "link": result.get("link", ""),
-                "snippet": result.get("snippet", ""),
-                "source": result.get("source", ""),
-                "date": result.get("date", "")
+                "url": result.get("url", ""),
+                "content": result.get("content", ""),
+                "score": result.get("score", 0),
+                "published_date": result.get("published_date", "")
             })
         
         # Generate insights from the search results
@@ -72,9 +65,11 @@ class WebSearchAgent:
         context = ""
         for i, result in enumerate(results, 1):
             context += f"{i}. Title: {result['title']}\n"
-            context += f"   Source: {result['source']}\n"
-            context += f"   Date: {result['date']}\n"
-            context += f"   Snippet: {result['snippet']}\n\n"
+            context += f"   URL: {result['url']}\n"
+            context += f"   Published Date: {result['published_date']}\n"
+            # Include only a brief snippet of content to avoid copyright issues
+            content_snippet = result['content'][:200] + "..." if len(result['content']) > 200 else result['content']
+            context += f"   Content Snippet: {content_snippet}\n\n"
         
         # Create prompt for insights
         prompt = ChatPromptTemplate.from_messages([
@@ -83,6 +78,9 @@ class WebSearchAgent:
             Analyze the following recent news articles about NVIDIA to answer the query.
             Focus on extracting the most relevant and recent insights.
             Provide a balanced perspective considering multiple sources.
+            
+            IMPORTANT: Do not quote extensively from the articles. Use your own words to summarize insights.
+            Include at most one short quote (under 25 words) per source, if necessary.
             """),
             ("human", "Recent news articles about NVIDIA:\n{context}\n\nQuery: {query}")
         ])
