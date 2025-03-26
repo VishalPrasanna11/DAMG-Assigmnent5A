@@ -15,7 +15,7 @@ class WebSearchAgent:
         self.client = TavilyClient(api_key=self.api_key)
         self.llm = ChatOpenAI(temperature=0)
         
-    def query(self, query_text: str) -> Dict[str, Any]:
+    def query(self, query_text: str, year: Optional[int] = None, quarter: Optional[int] = None) -> Dict[str, Any]:
         """
         Query Tavily API for latest information on NVIDIA related to the query.
         
@@ -26,8 +26,12 @@ class WebSearchAgent:
             Dictionary with search results and synthesized information
         """
         # Augment query to focus on NVIDIA and recent information
-        augmented_query = f"NVIDIA {query_text} latest news this week"
+        if year or quarter is not None:
+            augmented_query = f"NVIDIA {query_text},{year},{quarter} news"
+        else:    
+            augmented_query = f"NVIDIA {query_text} latest news"
         
+
         # Execute search with Tavily
         response = self.client.search(
             query=augmented_query,

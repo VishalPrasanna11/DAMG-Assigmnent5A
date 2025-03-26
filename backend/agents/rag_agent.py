@@ -4,7 +4,8 @@ import logging
 from typing import Dict, Any, List, Optional
 from pinecone import Pinecone
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import ChatOpenAI
+from langchain.prompts import ChatPromptTemplate
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 
 # Set up logging
@@ -22,9 +23,12 @@ class RagAgent:
             raise ValueError("OPENAI_API_KEY environment variable not set")
         
         self.pc = Pinecone(api_key=api_key)
-        self.index_name = "nvidia-collection"
-        self.embedding_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        self.index_name = "test1"
+        
+        # Change to OpenAI embeddings instead of HuggingFace
+        self.embedding_model = OpenAIEmbeddings(
+            model="text-embedding-3-large",
+            openai_api_key=openai_api_key
         )
         self.llm = ChatOpenAI(temperature=0, api_key=openai_api_key)
         
@@ -47,7 +51,7 @@ class RagAgent:
             # Log query parameters
             logger.info(f"RAG Query: '{query_text}', Year: {year}, Quarter: {quarter}")
             
-            # Generate embedding for the query
+            # Generate embedding for the query using OpenAI
             query_embedding = self.embedding_model.embed_query(query_text)
             
             # Prepare metadata filter - convert to format stored in Pinecone
@@ -97,8 +101,8 @@ class RagAgent:
                     "sources": []
                 }
             
-            # Combine contexts
-            combined_context = "\n\n---\n\n".join(contexts)
+            # Combine contexts for the LLM
+            combined_context = "\n\n".join(contexts)
             
             # Create prompt for generation
             prompt = ChatPromptTemplate.from_messages([
@@ -144,9 +148,9 @@ class RagAgent:
             indexes = self.pc.list_indexes()
             logger.info(f"Available indexes: {indexes}")
             
-            index_names = [idx["name"] for idx in indexes]
-            if self.index_name not in index_names:
-                logger.error(f"Index '{self.index_name}' not found in available indexes: {index_names}")
+            # Check if our index exists in the available indexes
+            if self.index_name not in [idx for idx in indexes]:
+                logger.error(f"Index '{self.index_name}' not found in available indexes: {indexes}")
                 return False
                 
             # Test a simple query to make sure we can connect
