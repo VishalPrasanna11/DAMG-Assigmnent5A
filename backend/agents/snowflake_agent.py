@@ -1,149 +1,131 @@
-# backend/agents/snowflake_agent.py
+from dotenv import load_dotenv
 import os
-from typing import Dict, Any, List, Optional
-import snowflake.connector
 import pandas as pd
+import snowflake.connector
 import matplotlib.pyplot as plt
-import io
-import base64
-from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+import matplotlib.ticker as ticker
 
-class SnowflakeAgent:
-    def __init__(self):
-        # Initialize Snowflake connection
-        self.conn = snowflake.connector.connect(
-            user=os.getenv('SNOWFLAKE_USER'),
-            password=os.getenv('SNOWFLAKE_PASSWORD'),
-            account=os.getenv('SNOWFLAKE_ACCOUNT'),
-            warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
-            database=os.getenv('SNOWFLAKE_DATABASE'),
-            schema=os.getenv('SNOWFLAKE_SCHEMA')
-        )
-        self.llm = ChatOpenAI(temperature=0)
-        
-    def query(self, query_text: str, year: Optional[int] = None, quarter: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Query Snowflake for NVIDIA valuation metrics.
-        
-        Args:
-            query_text: The query text
-            year: Optional year filter
-            quarter: Optional quarter filter
-            
-        Returns:
-            Dictionary with financial metrics and visualization
-        """
-        # Build SQL query with filters
-        sql = "SELECT * FROM NVIDIA_VALUATION_METRICS"
-        conditions = []
-        
-        if year is not None:
-            conditions.append(f"YEAR = {year}")
-        if quarter is not None:
-            conditions.append(f"QUARTER = {quarter}")
-        
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-        
-        # Execute query
-        cursor = self.conn.cursor()
-        cursor.execute(sql)
-        
-        # Convert to DataFrame
-        df = pd.DataFrame.from_records(
-            iter(cursor), 
-            columns=[col[0] for col in cursor.description]
-        )
-        
-        # Generate visualization based on the query
-        chart_img = self._generate_chart(df, query_text)
-        
-        # Generate text analysis
-        analysis = self._generate_analysis(df, query_text)
-        
-        # Return results
-        return {
-            "data": df.to_dict(orient="records"),
-            "response": analysis,
-            "chart": chart_img
-        }
-        
-    def _generate_chart(self, df: pd.DataFrame, query_text: str) -> str:
-        """Generate an appropriate chart based on the data and query"""
-        # Simple logic to determine chart type
-        if "trend" in query_text.lower() or "over time" in query_text.lower():
-            # Create time series chart
-            plt.figure(figsize=(10, 6))
-            
-            # If we have time-based columns
-            if "YEAR" in df.columns and "QUARTER" in df.columns:
-                # Create period label (e.g., "2022-Q1")
-                df["PERIOD"] = df["YEAR"].astype(str) + "-Q" + df["QUARTER"].astype(str)
-                
-                # Plot relevant metrics
-                for col in df.columns:
-                    if col not in ["YEAR", "QUARTER", "PERIOD"] and df[col].dtype in [float, int]:
-                        plt.plot(df["PERIOD"], df[col], marker='o', label=col)
-                
-                plt.title(f"NVIDIA Metrics Over Time")
-                plt.xticks(rotation=45)
-                plt.legend()
-                plt.tight_layout()
-            
+from langchain_openai import ChatOpenAI
+from langchain.agents import initialize_agent, AgentType
+from langchain.tools import tool
+
+# Load credentials
+load_dotenv()
+
+# ✅ Query helper
+def query_snowflake(query: str) -> pd.DataFrame:
+    conn = snowflake.connector.connect(
+        user=os.getenv("SNOWFLAKE_USER"),
+        password=os.getenv("SNOWFLAKE_PASSWORD"),
+        account=os.getenv("SNOWFLAKE_ACCOUNT"),
+        warehouse=os.getenv("SNOWFLAKE_WAREHOUSE"),
+        database=os.getenv("SNOWFLAKE_DATABASE"),
+        schema=os.getenv("SNOWFLAKE_SCHEMA")
+    )
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+# ✅ Enhanced dynamic chart generator
+def generate_chart(df, metric="MARKETCAP") -> str:
+    df = df.sort_values("ASOFDATE")
+    df["ASOFDATE"] = pd.to_datetime(df["ASOFDATE"])
+
+    # Build the figure
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(df["ASOFDATE"], df[metric], marker="o", linewidth=2, color="#007acc")
+
+    # Title and axes
+    ax.set_title(f"NVIDIA {metric} Over Time", fontsize=14)
+    ax.set_xlabel("Date", fontsize=12)
+    ax.set_ylabel(metric, fontsize=12)
+    plt.xticks(rotation=45)
+    ax.grid(True, linestyle="--", alpha=0.6)
+
+    # Format y-axis with billion/trillion scaling
+    def billions(x, pos):
+        if x >= 1e12:
+            return f"${x*1.0/1e12:.1f}T"
+        elif x >= 1e9:
+            return f"${x*1.0/1e9:.1f}B"
         else:
-            # Create bar chart of recent metrics
-            plt.figure(figsize=(10, 6))
-            
-            # Get the most recent period
-            if len(df) > 0:
-                recent_df = df.iloc[-1:]
-                
-                # Plot bar chart of numeric columns
-                numeric_cols = [col for col in recent_df.columns 
-                               if col not in ["YEAR", "QUARTER", "PERIOD"] 
-                               and recent_df[col].dtype in [float, int]]
-                
-                if numeric_cols:
-                    recent_df[numeric_cols].transpose().plot(kind='bar', legend=False)
-                    plt.title(f"NVIDIA Recent Financial Metrics")
-                    plt.tight_layout()
-        
-        # Save figure to bytes
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png')
-        buf.seek(0)
-        
-        # Convert to base64 for embedding in response
-        img_str = base64.b64encode(buf.read()).decode('utf-8')
-        plt.close()
-        
-        return img_str
-        
-    def _generate_analysis(self, df: pd.DataFrame, query_text: str) -> str:
-        """Generate text analysis of financial metrics"""
-        # Convert dataframe to string representation
-        if len(df) > 0:
-            data_str = df.to_string()
-        else:
-            data_str = "No data available for the specified filters."
-        
-        # Create prompt for analysis
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """
-            You are a financial analyst specializing in NVIDIA.
-            Analyze the following financial metrics from Snowflake and answer the query.
-            Provide insights about trends, notable changes, and implications.
-            Only use the information in the provided data.
-            """),
-            ("human", "Financial metrics data:\n{data}\n\nQuery: {query}")
-        ])
-        
-        # Generate analysis
-        chain = prompt | self.llm
-        response = chain.invoke({
-            "data": data_str,
-            "query": query_text
-        })
-        
-        return response.content
+            return f"${x:,.0f}"
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(billions))
+
+    # Add data labels
+    for i, row in df.iterrows():
+        ax.annotate(
+            f'{row[metric]/1e9:.1f}B',
+            (row["ASOFDATE"], row[metric]),
+            textcoords="offset points",
+            xytext=(0, 8),
+            ha='center',
+            fontsize=8,
+            color='gray'
+        )
+
+    # Save the chart
+    plt.tight_layout()
+    chart_path = f"{metric.lower()}_chart.png"
+    plt.savefig(chart_path)
+    plt.close()
+    return f"📊 Chart saved as {chart_path}"
+
+# ✅ LangChain Tool
+@tool
+def get_nvidia_financials(input: str) -> str:
+    """
+    Get NVIDIA financials from Snowflake for a given year and quarter.
+    Input: "year=2024, quarter=1"
+    """
+    try:
+        year = input.split("year=")[1].split(",")[0].strip()
+        quarter = input.split("quarter=")[1].strip()
+
+        query = f"""
+        SELECT * FROM NVIDIA_FINANCIALS 
+        WHERE YEAR(ASOFDATE) = {year} AND QUARTER(ASOFDATE) = {quarter}
+        """
+
+        df = query_snowflake(query)
+
+        if df.empty:
+            return f"No data found for year {year} and quarter {quarter}."
+
+        # Textual summary
+        row = df.iloc[0]
+        summary = (
+            f"NVIDIA Financials for Q{quarter} {year}:\n"
+            f"- ASOFDATE: {row['ASOFDATE']}\n"
+            f"- ENTERPRISEVALUE: {row['ENTERPRISEVALUE']:,}\n"
+            f"- MARKETCAP: {row['MARKETCAP']:,}\n"
+            f"- PERATIO: {row['PERATIO']:.2f}\n"
+            f"- PBRATIO: {row['PBRATIO']:.2f}\n"
+            f"- PSRATIO: {row['PSRATIO']:.2f}\n"
+            f"- PEGRATIO: {row['PEGRATIO']:.4f}\n"
+            f"- FORWARDPERATIO: {row['FORWARDPERATIO']:.2f}"
+        )
+
+        # Save enhanced chart
+        chart_msg = generate_chart(df, metric="MARKETCAP")
+
+        return summary + f"\n\n{chart_msg}"
+
+    except Exception as e:
+        return f"Error parsing input or querying Snowflake: {e}"
+
+# 🔮 Language Model
+llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+
+# 🤖 Agent
+agent = initialize_agent(
+    tools=[get_nvidia_financials],
+    llm=llm,
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+    verbose=True
+)
+
+# 🔁 Prompt user from terminal
+user_prompt = input("Your question: ")
+response = agent.invoke(user_prompt)
+print(response["output"])
