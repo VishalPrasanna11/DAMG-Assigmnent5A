@@ -11,8 +11,8 @@ app = FastAPI(title="NVIDIA Research Assistant API")
 
 class ResearchQuery(BaseModel):
     query: str
-    year: Optional[int] = None
-    quarter: Optional[int] = None
+    years: Optional[List[int]] = None
+    quarters: Optional[List[int]] = None
     agents: List[str] = ["rag", "snowflake", "websearch"]
 
 @app.post("/research")
@@ -26,16 +26,19 @@ async def generate_research(request: ResearchQuery):
         )
         
         # Generate research report
-        print(f"Running orchestrator with query: {request.query}, year: {request.year}, quarter: {request.quarter}")
+        print(f"Running orchestrator with query: {request.query}, years: {request.years}, quarters: {request.quarters}")
         result = orchestrator.run(
             query=request.query,
-            year=request.year,
-            quarter=request.quarter
+            years=request.years,
+            quarters=request.quarters
         )
         
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"Error in research endpoint: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @app.get("/health")
 def health_check():

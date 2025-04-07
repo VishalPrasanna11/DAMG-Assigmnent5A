@@ -4,10 +4,12 @@ import pandas as pd
 import snowflake.connector
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
+import base64
+from io import BytesIO
 
 class SnowflakeAgent:
     def __init__(self):
@@ -26,28 +28,40 @@ class SnowflakeAgent:
         
         # Initialize LLM
         self.llm = ChatOpenAI(temperature=0)
+        
+        # Use the correct table name based on screenshot
+        self.table_name = os.getenv("SNOWFLAKE_TABLE", "NVDA_STOCK_DATA")
+        
+        # Create a shared directory for charts
+        self.charts_dir = os.getenv("CHARTS_DIR", "/app/shared")
+        os.makedirs(self.charts_dir, exist_ok=True)
     
-    def query(self, query_text: str, year: Optional[int] = None, quarter: Optional[int] = None) -> Dict[str, Any]:
+    def query(self, query_text: str, years: Optional[List[int]] = None, quarters: Optional[List[int]] = None) -> Dict[str, Any]:
         """
-        Query Snowflake for NVIDIA financial data based on query text, year, and quarter.
+        Query Snowflake for NVIDIA financial data based on query text, years, and quarters.
         
         Args:
             query_text: The query text
-            year: Optional year filter
-            quarter: Optional quarter filter
+            years: Optional list of years to filter by
+            quarters: Optional list of quarters to filter by
             
         Returns:
             Dictionary with structured data, charts, and generated response
         """
         try:
             # Build SQL query with filters
-            sql_query = "SELECT * FROM NVDA_FINANCIAL_DATA"
+            sql_query = f"SELECT * FROM {self.table_name}"
             
             where_clauses = []
-            if year is not None:
-                where_clauses.append(f"YEAR(Report_Date) = {year}")
-            if quarter is not None:
-                where_clauses.append(f"QUARTER(Report_Date) = {quarter}")
+            if years is not None and len(years) > 0:
+                # For stock data, we need to extract the year from the DATE column
+                years_str = ", ".join([str(year) for year in years])
+                where_clauses.append(f"YEAR(DATE) IN ({years_str})")
+            
+            if quarters is not None and len(quarters) > 0:
+                # Extract quarter from DATE
+                quarters_str = ", ".join([str(quarter) for quarter in quarters])
+                where_clauses.append(f"QUARTER(DATE) IN ({quarters_str})")
                 
             if where_clauses:
                 sql_query += " WHERE " + " AND ".join(where_clauses)
@@ -57,7 +71,7 @@ class SnowflakeAgent:
             
             if df.empty:
                 return {
-                    "response": f"No financial data found for NVIDIA with the specified filters.",
+                    "response": f"No stock data found for NVIDIA with the specified filters.",
                     "chart": None,
                     "sources": ["Snowflake Database"]
                 }
@@ -65,20 +79,24 @@ class SnowflakeAgent:
             # Generate chart if data is available
             chart_path = None
             if not df.empty:
-                chart_path = self._generate_chart(df, "Market_Cap")
+                chart_path = self._generate_chart(df, "CLOSE")
             
             # Generate analysis with LLM
-            analysis = self._generate_analysis(df, query_text)
+            analysis = self._generate_analysis(df, query_text, years, quarters)
             
             return {
                 "response": analysis,
                 "chart": chart_path,
-                "sources": ["Snowflake Database - NVDA_FINANCIAL_DATA"]
+                "sources": ["Snowflake Database - " + self.table_name]
             }
             
         except Exception as e:
+            # Return error details with traceback for better debugging
+            import traceback
+            error_message = f"Error querying Snowflake: {str(e)}\n{traceback.format_exc()}"
+            print(error_message)
             return {
-                "response": f"Error querying Snowflake: {str(e)}",
+                "response": error_message,
                 "chart": None,
                 "sources": []
             }
@@ -95,20 +113,32 @@ class SnowflakeAgent:
         )
         
         try:
+            # Check if table exists first
+            cursor = conn.cursor()
+            cursor.execute(f"SHOW TABLES LIKE '{self.table_name}'")
+            tables = cursor.fetchall()
+            
+            if not tables:
+                # For demonstration without proper Snowflake setup, use CSV instead
+                print(f"Table {self.table_name} not found. Using fallback CSV data.")
+                csv_path = os.getenv("NVDA_CSV_PATH", "/app/NVDA_5yr_history_20250407.csv")
+                if os.path.exists(csv_path):
+                    return pd.read_csv(csv_path)
+                else:
+                    raise ValueError(f"Neither Snowflake table nor CSV file found at {csv_path}")
+            
+            # Execute the actual query
             df = pd.read_sql(query, conn)
             return df
         finally:
             conn.close()
     
-    def _generate_chart(self, df, metric="Market_Cap") -> str:
+    def _generate_chart(self, df, metric="CLOSE") -> str:
         """Generate chart for visualization"""
-        # Convert dates if needed
-        if 'Report_Date' in df.columns:
-            df['Report_Date'] = pd.to_datetime(df['Report_Date'])
-            date_col = 'Report_Date'
-        elif 'ASOFDATE' in df.columns:
-            df['ASOFDATE'] = pd.to_datetime(df['ASOFDATE'])
-            date_col = 'ASOFDATE'
+        # Based on the screenshot, we see DATE, CLOSE, HIGH, LOW, etc.
+        if 'DATE' in df.columns:
+            df['DATE'] = pd.to_datetime(df['DATE'])
+            date_col = 'DATE'
         else:
             # Find a date column
             date_cols = [col for col in df.columns if 'date' in col.lower()]
@@ -121,14 +151,14 @@ class SnowflakeAgent:
         # Find the metric column (case insensitive)
         metric_col = None
         for col in df.columns:
-            if col.lower() == metric.lower():
+            if col.upper() == metric.upper():
                 metric_col = col
                 break
         
         if not metric_col:
-            metric_options = [col for col in df.columns if 'cap' in col.lower() or 'value' in col.lower()]
-            if metric_options:
-                metric_col = metric_options[0]
+            # Based on screenshot, default to CLOSE if metric not found
+            if 'CLOSE' in df.columns:
+                metric_col = 'CLOSE'
             else:
                 return None
         
@@ -140,26 +170,21 @@ class SnowflakeAgent:
         ax.plot(df[date_col], df[metric_col], marker="o", linewidth=2, color="#007acc")
 
         # Title and axes
-        ax.set_title(f"NVIDIA {metric_col} Over Time", fontsize=14)
+        ax.set_title(f"NVIDIA {metric_col} Stock Price Over Time", fontsize=14)
         ax.set_xlabel("Date", fontsize=12)
-        ax.set_ylabel(metric_col, fontsize=12)
+        ax.set_ylabel(f"{metric_col} Price ($)", fontsize=12)
         plt.xticks(rotation=45)
         ax.grid(True, linestyle="--", alpha=0.6)
 
-        # Format y-axis with billion/trillion scaling
-        def billions(x, pos):
-            if x >= 1e12:
-                return f"${x*1.0/1e12:.1f}T"
-            elif x >= 1e9:
-                return f"${x*1.0/1e9:.1f}B"
-            else:
-                return f"${x:,.0f}"
-        ax.yaxis.set_major_formatter(ticker.FuncFormatter(billions))
+        # Format y-axis with dollar formatting
+        ax.yaxis.set_major_formatter(ticker.StrMethodFormatter("${x:,.2f}"))
 
-        # Add data labels
-        for i, row in df.iterrows():
+        # Add data labels for some points (not all to avoid overcrowding)
+        # Take every nth point
+        n = max(1, len(df) // 10)  # Show about 10 labels
+        for i, row in df.iloc[::n].iterrows():
             ax.annotate(
-                f'{row[metric_col]/1e9:.1f}B',
+                f'${row[metric_col]:.2f}',
                 (row[date_col], row[metric_col]),
                 textcoords="offset points",
                 xytext=(0, 8),
@@ -168,34 +193,59 @@ class SnowflakeAgent:
                 color='gray'
             )
 
-        # Save the chart
+        # Save the chart to the shared directory
+        chart_filename = f"nvda_{metric_col.lower()}_chart.png"
+        chart_path = os.path.join(self.charts_dir, chart_filename)
+        
         plt.tight_layout()
-        chart_path = f"nvda_{metric_col.lower()}_chart.png"
-        plt.savefig(chart_path)
-        plt.close()
+        try:
+            plt.savefig(chart_path)
+            print(f"Chart saved to: {chart_path}")
+            plt.close()
+            
+            # Test if file exists and is readable
+            if os.path.exists(chart_path):
+                return chart_path
+            else:
+                print(f"Chart file not found at {chart_path} after saving")
+                return None
+        except Exception as e:
+            print(f"Error saving chart: {str(e)}")
+            plt.close()
+            return None
         
-        return chart_path
-        
-    def _generate_analysis(self, df: pd.DataFrame, query_text: str) -> str:
+    def _generate_analysis(self, df: pd.DataFrame, query_text: str, 
+                          years: Optional[List[int]] = None, quarters: Optional[List[int]] = None) -> str:
         """Generate analysis of financial data using LLM"""
         # Format dataframe as string for context
         df_str = df.head(10).to_string()
+        
+        # Create a filter description for context
+        filter_desc = ""
+        if years and len(years) > 0:
+            filter_desc += f"Years: {', '.join(map(str, years))}\n"
+        if quarters and len(quarters) > 0:
+            filter_desc += f"Quarters: {', '.join([f'Q{q}' for q in quarters])}\n"
         
         # Create prompt for analysis
         prompt = ChatPromptTemplate.from_messages([
             ("system", """
             You are a financial analyst specializing in NVIDIA.
-            Analyze the provided financial data table to answer the user's query.
-            Focus on key metrics, trends, and notable changes.
+            Analyze the provided stock data table to answer the user's query.
+            Focus on key metrics, trends, and notable changes in stock prices.
             Provide insights in a clear, concise manner suitable for financial analysis.
+            Pay special attention to the CLOSE, HIGH, LOW, OPEN prices and trading VOLUME.
+            If calculating returns or growth, be explicit about the time periods.
             """),
             ("human", """
-            NVIDIA Financial Data:
+            NVIDIA Stock Data:
             {data}
+            
+            {filter_desc}
             
             User Query: {query}
             
-            Provide a detailed analysis based on this financial data.
+            Provide a detailed analysis based on this stock data.
             """)
         ])
         
@@ -203,6 +253,7 @@ class SnowflakeAgent:
         chain = prompt | self.llm
         response = chain.invoke({
             "data": df_str,
+            "filter_desc": filter_desc,
             "query": query_text
         })
         

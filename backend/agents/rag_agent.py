@@ -35,31 +35,31 @@ class RagAgent:
         # Log available indexes for debugging
         logger.info(f"Available Pinecone indexes: {self.pc.list_indexes()}")
         
-    def query(self, query_text: str, year: Optional[int] = None, quarter: Optional[int] = None) -> Dict[str, Any]:
+    def query(self, query_text: str, years: Optional[List[int]] = None, quarters: Optional[List[int]] = None) -> Dict[str, Any]:
         """
-        Query the RAG system with optional metadata filtering by year and quarter.
+        Query the RAG system with optional metadata filtering by multiple years and quarters.
         
         Args:
             query_text: The query text
-            year: Optional year filter
-            quarter: Optional quarter filter
+            years: Optional list of years to filter by
+            quarters: Optional list of quarters to filter by
             
         Returns:
             Dictionary with retrieved context and generated response
         """
         try:
             # Log query parameters
-            logger.info(f"RAG Query: '{query_text}', Year: {year}, Quarter: {quarter}")
+            logger.info(f"RAG Query: '{query_text}', Years: {years}, Quarters: {quarters}")
             
             # Generate embedding for the query using OpenAI
             query_embedding = self.embedding_model.embed_query(query_text)
             
             # Prepare metadata filter - convert to format stored in Pinecone
             filter_dict = {}
-            if year is not None:
-                filter_dict["year"] = str(year)  # Convert to string to match format in Pinecone
-            if quarter is not None:
-                filter_dict["quarter"] = f"q{quarter}"  # Format as "q1", "q2", etc.
+            if years is not None and len(years) > 0:
+                filter_dict["year"] = {"$in": [str(year) for year in years]}  # Filter for any of the years
+            if quarters is not None and len(quarters) > 0:
+                filter_dict["quarter"] = {"$in": [f"q{quarter}" for quarter in quarters]}  # Filter for any of the quarters
             
             logger.info(f"Using filter: {filter_dict}")
             
@@ -71,7 +71,8 @@ class RagAgent:
                 vector=query_embedding,
                 filter=filter_dict if filter_dict else None,
                 top_k=10,
-                include_metadata=True
+                include_metadata=True,
+                alpha=0.5  # Hybrid search parameter - balance between metadata and vector similarity
             )
             
             # Log search results for debugging

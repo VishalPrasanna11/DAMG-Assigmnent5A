@@ -2,10 +2,11 @@
 import streamlit as st
 import requests
 import json
+import os
 from typing import List, Dict, Any
 
 # API endpoint
-API_URL = "http://localhost:8000"  # When running in Docker
+API_URL = os.environ.get("API_URL", "http://backend:8000")  # When running in Docker
 
 st.title("NVIDIA Research Assistant")
 st.write("Ask questions about NVIDIA's financial performance and get comprehensive research insights.")
@@ -13,12 +14,12 @@ st.write("Ask questions about NVIDIA's financial performance and get comprehensi
 # User input
 query = st.text_input("Research Question", "What was NVIDIA's revenue growth in the past year?")
 
-# Filtering options
+# Filtering options - modified to allow multiple selections
 col1, col2 = st.columns(2)
 with col1:
-    year = st.selectbox("Year", [None, 2020, 2021, 2022, 2023, 2024])
+    years = st.multiselect("Years", [2020, 2021, 2022, 2023, 2024], default=[])
 with col2:
-    quarter = st.selectbox("Quarter", [None, 1, 2, 3, 4])
+    quarters = st.multiselect("Quarters", [1, 2, 3, 4], default=[])
 
 # Agent selection
 st.write("Select Research Agents:")
@@ -40,14 +41,14 @@ if st.button("Generate Research Report"):
     if use_websearch:
         agents.append("websearch")
         
-    # Prepare request
+    # Prepare request - modified to handle multiple years and quarters
     payload = {
         "query": query,
-        "year": year,
-        "quarter": quarter,
+        "years": years if years else None,
+        "quarters": quarters if quarters else None,
         "agents": agents
     }
-    print(f"Payload for API: {json.dumps(payload)}")  # Debugging line to check payload
+    st.write(f"Sending query with parameters: Years={years}, Quarters={quarters}")
     
     with st.spinner("Generating research report..."):
         try:
@@ -58,6 +59,10 @@ if st.button("Generate Research Report"):
             # Display report sections
             st.subheader("Research Report")
             
+            if "content" in result:
+                st.markdown("### Comprehensive Analysis")
+                st.write(result["content"])
+            
             if "historical_data" in result and use_rag:
                 st.markdown("### Historical Performance")
                 st.write(result["historical_data"]["content"])
@@ -65,13 +70,26 @@ if st.button("Generate Research Report"):
             if "financial_metrics" in result and use_snowflake:
                 st.markdown("### Financial Metrics")
                 st.write(result["financial_metrics"]["content"])
-                # Display chart if available
-                if "chart" in result["financial_metrics"]:
-                    st.image(result["financial_metrics"]["chart"])
+                
+                # Display chart if available with better error handling
+                if "chart" in result["financial_metrics"] and result["financial_metrics"]["chart"]:
+                    chart_path = result["financial_metrics"]["chart"]
+                    try:
+                        # Try to display the image
+                        st.image(chart_path)
+                    except Exception as e:
+                        st.error(f"Error displaying chart: {str(e)}")
+                        st.write(f"Chart path was: {chart_path}")
                     
             if "latest_insights" in result and use_websearch:
                 st.markdown("### Latest Insights & Trends")
                 st.write(result["latest_insights"]["content"])
+                
+                # Display sources if available
+                if "sources" in result["latest_insights"] and result["latest_insights"]["sources"]:
+                    st.markdown("#### Sources")
+                    for source in result["latest_insights"]["sources"]:
+                        st.write(source)
                 
         except Exception as e:
             st.error(f"Error generating report: {str(e)}")

@@ -41,19 +41,19 @@ class ResearchOrchestrator:
         
         logger.info(f"Initialized orchestrator with agents: {self.active_agents}")
         
-    def run(self, query: str, year: Optional[int] = None, quarter: Optional[int] = None) -> Dict[str, Any]:
+    def run(self, query: str, years: Optional[List[int]] = None, quarters: Optional[List[int]] = None) -> Dict[str, Any]:
         """
         Run the research orchestrator to generate a comprehensive report.
         
         Args:
             query: The research question
-            year: Optional year filter
-            quarter: Optional quarter filter
+            years: Optional list of years to filter by
+            quarters: Optional list of quarters to filter by
             
         Returns:
             Dictionary with the final research report
         """
-        logger.info(f"Running orchestrator with query: {query}, year: {year}, quarter: {quarter}")
+        logger.info(f"Running orchestrator with query: {query}, years: {years}, quarters: {quarters}")
         
         results = {}
         content = {}
@@ -62,9 +62,10 @@ class ResearchOrchestrator:
         if "rag" in self.active_agents:
             logger.info("Processing with RAG agent")
             try:
-                rag_results = self.rag_agent.query(query, year, quarter)
+                rag_results = self.rag_agent.query(query, years, quarters)
                 results["historical_data"] = {
                     "content": rag_results.get("response", "No historical data available"),
+                    "sources": rag_results.get("sources", [])
                 }
                 content["historical_data"] = rag_results.get("response", "No historical data available")
             except Exception as e:
@@ -79,7 +80,7 @@ class ResearchOrchestrator:
         if "snowflake" in self.active_agents:
             logger.info("Processing with Snowflake agent")
             try:
-                snowflake_results = self.snowflake_agent.query(query, year, quarter)
+                snowflake_results = self.snowflake_agent.query(query, years, quarters)
                 results["financial_metrics"] = {
                     "content": snowflake_results.get("response", "No financial metrics available"),
                     "chart": snowflake_results.get("chart", None),
@@ -99,7 +100,7 @@ class ResearchOrchestrator:
         if "websearch" in self.active_agents:
             logger.info("Processing with WebSearch agent")
             try:
-                websearch_results = self.websearch_agent.query(query, year, quarter)
+                websearch_results = self.websearch_agent.query(query, years, quarters)
                 results["latest_insights"] = {
                     "content": websearch_results.get("response", "No recent insights available"),
                     "sources": websearch_results.get("sources", [])
